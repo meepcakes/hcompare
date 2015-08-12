@@ -6,6 +6,7 @@
  * main git repo:  https://hzqmrk@bitbucket.org:443/hzqmrk/hcompare
  *                 ssh://hzqmrk@bitbucket.org/hzqmrk/hcompare - does not work
  *
+ *
  * TODO Properly argument inputs.
  * TODO check return values and add better comments, function headers, etc...
  * TODO does this give a useful return value (non-zero) on errors?
@@ -13,7 +14,6 @@
  * TODO if delimiters in ref file are not tabs it stack dumps
  * TODO full level of tests
  * TODO sequence err return numbers
- * TODO ensure read buffer size is multiple of 64
  */
 
 #include <stdio.h>
@@ -61,7 +61,8 @@ const uint32_t r[] = { 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17,
 // leftrotate macro function definition
 #define LEFTROTATE(x, c) (((x) << (c)) | ((x) >> (32 - (c))))
 
-static char mflag = 'c'; 		// mode flag
+static char rflag = 0; 			// We are creating a reference file
+static char kflag = 0;			//analysis mode off by default
 static char *fvalue = NULL; 	// file to use or create
 static char *dvalue = NULL; 	// directory to use
 static FILE * ref_fd = NULL; 	// reference file handle
@@ -87,7 +88,7 @@ void err(int val, const char * msg) {
 	exit(val);
 }
 
-/* @brief Write out an error message
+/* @brief Write out an warn message
  *
  * Format is,
  *
@@ -113,16 +114,29 @@ void debug(const char * msg) {
 	}
 }
 
-/* @brief Store integer  in same order no matter the system byte ordering
+/* @brief Store integer in same order no matter the system byte ordering
  *
  * @param val integer value to store
- * @param  pointer to the byte array for storage
+ * @param pointer to the byte array for storage
  */
 void to_bytes(uint32_t val, uint8_t *bytes) {
 	bytes[0] = (uint8_t) val;
 	bytes[1] = (uint8_t) (val >> 8);
 	bytes[2] = (uint8_t) (val >> 16);
 	bytes[3] = (uint8_t) (val >> 24);
+}
+
+/* @brief Check if file exists.
+ *
+ * @param filename to check
+ * @return returns
+ */
+int file_exists(const char *filename){
+	debug("Inside [file_exists]\n");
+
+	FILE *fp = fopen(filename,"r");
+	if (fp != NULL) fclose(fp);
+	return (fp!=NULL);
 }
 
 /* @brief Retrieve integer bytes in same order no matter the system byte ordering
@@ -146,6 +160,7 @@ uint32_t to_int32(uint8_t *bytes) {
  * @param digest pointer for where to put the results
  */
 void md5_file(char * fn, size_t initial_len, uint8_t *digest) {
+	debug("Inside [md5_file]\n");
 
 	// These vars will contain the hash
 	uint32_t h0, h1, h2, h3;
@@ -275,8 +290,11 @@ void md5_file(char * fn, size_t initial_len, uint8_t *digest) {
  *
  * @param dname pointer to the directory name
  * @param spec walking config bits
+ * @return returns success state.
  */
 int walk_recur(char *dname, int spec) {
+	debug("Inside [walk_recur]\n");
+
 	struct dirent *dent;
 	DIR *dir;
 	struct stat st;
@@ -361,8 +379,10 @@ int walk_recur(char *dname, int spec) {
 
 /* @brief parse the command line arguments with getopt
  *
+ *
  */
 int parse_command_line(int argc, char **argv) {
+	debug("Inside [parse_command_line]\n");
 
 	int rval = 1;	// return value
 	int index = 0;
@@ -372,10 +392,13 @@ int parse_command_line(int argc, char **argv) {
 
 	opterr = 0;
 
-	while ((c = getopt(argc, argv, "m:b:f:d:v")) != -1)
+	while ((c = getopt(argc, argv, "rkb:d:f:v")) != -1)
 		switch (c) {
-		case 'm':
-			mflag = *optarg;
+		case 'r':
+			rflag = 1;
+			break;
+		case 'k':
+			kflag = 1;
 			break;
 		case 'b':
 			g_rdbufsz = atoi(optarg);
@@ -390,7 +413,7 @@ int parse_command_line(int argc, char **argv) {
 			verbosity++;
 			break;
 		case '?':
-			if ((optopt == 'd') || (optopt == 'f'))
+			if ((optopt == 'b') || (optopt == 'd') || (optopt == 'f') )
 				fprintf(stderr, "Option -%c requires an argument.\n", optopt);
 			else if (isprint(optopt)) {
 				fprintf(stderr, "Unknown option `-%c'.\n", optopt);
@@ -403,6 +426,34 @@ int parse_command_line(int argc, char **argv) {
 			rval = 0;
 		}
 
+	//if g_rdbufsz is not multiple of 64, error.
+	if (g_rdbufsz % 64 != 0){
+		warn("Read buffer must be multiple of 64");
+		rval = 0;
+	}
+
+	//only check for directory if running creation..
+	if (rflag == 1 ){
+		//Check dvalue for Null
+		if (NULL == dvalue){
+			warn("No directory input set");
+			rval = 0;
+		}
+	}
+
+	//Check fvalue for Null
+	if (NULL == fvalue){
+		warn("No file input set");
+		rval = 0;
+	}else{
+		//Check if valid file only if not creating
+		if (rflag == 0 ){
+			if (NULL == (file_exists(fvalue))){
+				warn("File does not exist");
+				rval = 0;
+			}
+		}
+	}
 
 	// list out all arguments we don't know about
 	for (index = optind; index < argc; index++)
@@ -415,23 +466,27 @@ int parse_command_line(int argc, char **argv) {
  *
  */
 void usage(void) {
-	printf("Usage: hcompare [-m <Mode>] [-b <Buffer>] [-f <File>] [-d <Directory>] [-v <Verbosity>]\n");
+	debug("Inside [usage]\n");
+
+	printf("Usage: hcompare -b <Buffer> -f <File> -d <Directory> [-r] [-k] [-v <Verbosity>]\n");
 	printf("Options:\n");
-	printf(" -m <Mode>      : c = Creation (Default)\n");
-	printf("                  m = Manufacturing\n");
-	printf("                  a = Analysis\n");
-	printf(" -b <Buffer>    : Buffer Size. Default is ()\n");
+	printf(" -b <Buffer>    : Buffer Size. Default is (5 MB)\n");
 	printf(" -f <File>      : File name to be generated or read in. (Example: /fs/mmc1/ref.txt)\n");
 	printf(" -d <Directory> : Directory to walk and generate MD5s for (Example: /fs/mmc1)\n");
-	printf(" -v <Verbosity> : More v's More Verbose yo\n");
+	printf(" -r             : If set, will execute creation\n");
+	printf(" -k             : If set, will run program in analysis mode\n");
+	printf(" -v <Verbosity> : Verbose Output\n");
 }
 
 /* @brief Create an MD5 reference file
  *
  */
-void create_reference_file(void) {
+int create_reference_file() {
+
+	int rval = -1; //Return Value
 	int r = 0;
-	debug("create_reference_file");
+
+	debug("Inside [create_reference_file]\n");
 
 	debug(fvalue);
 
@@ -453,6 +508,7 @@ void create_reference_file(void) {
 
 	switch (r) {
 	case WALK_OK:
+		rval = 0;
 		break;
 	case WALK_BADIO:
 		err(1, "IO error");
@@ -466,26 +522,30 @@ void create_reference_file(void) {
 	default:
 		err(1, "Unknown walker error?");
 	}
+
+	return rval;
 }
+
 
 /* @brief Verify from reference file
  *
  */
 int do_file_verification() {
+	debug("Inside [do_file_verification]\n");
+
 	int rval = 0;					// return value
 	char buf[LINE_LENGTH_MAX];		// reference file line read buffer
 	char fn_buf[FILENAME_MAX];		// file name buffer
 	char md5_buf[MD5_MAX];			// md5 result buffer
 	char len_buf[LENGTH_MAX];		// length field read buffer
 	int flen = 0;					// current file length
-	char * p_c;						//
+	char * p_c;						// var tfor temp storage
 	uint8_t* p = NULL;
 	void* p_buf = NULL;
 	int r = 0;
 	int i = 0;
+	char test[32];
 	uint8_t result[16];
-
-	debug("do_file_verification\n");
 
 	//Open reference file
 	debug("do_file_verification: Open reference file");
@@ -516,8 +576,14 @@ int do_file_verification() {
 		p_c = strtok(NULL, "\n");
 		strcpy(fn_buf, p_c);
 
-		//Run MD5 passing in Filename and File Length.
-		md5_file(fn_buf, flen, result);
+		//Check if file exists on target before running MD5
+		if (NULL == (file_exists(fn_buf))){
+			printf("WARN: File does not exist: %s\n", fn_buf);
+			continue;
+		}else{
+			//Run MD5 passing in Filename and File Length.
+			md5_file(fn_buf, flen, result);
+		}
 
 		p = &result[0];
 		p_buf = &buf[0];
@@ -525,18 +591,21 @@ int do_file_verification() {
 			p_buf += sprintf((char *) p_buf, "%02x", *p++);
 		}
 
+		strncpy(test,md5_buf,32);
+		test[32] = 0;
+		debug(test);
+
 		//Compare strings together... MAX 16 char
 		r = strncmp(md5_buf, buf, 16);
 
 		if (r != 0) {
-			//mflag m = Manufacter Mode
-			if (mflag == 'm'){
+			//kflag 1 = Analysis Mode
+			if (kflag == 1){
+				printf("WARN: Mismatch file: %s  Expected Value: %s Actual Value: %s\n", fn_buf, buf, md5_buf);
+				rval = 1;
+			}else{
 				printf("ERROR: %s\n", fn_buf);
 				err(3, "Error File Mismatch");
-			//mflag a = Analysis Mode
-			}else if (mflag == 'a'){
-				warn(fn_buf);
-				rval = 1;
 			}
 		}
 	}
@@ -544,7 +613,8 @@ int do_file_verification() {
 	return rval;
 }
 
-int main(int argc, char **argv) {
+//#Meow
+int main(int argc, char **argv){
 	int r = -1;	// return code
 
 	// parse the command line
@@ -562,13 +632,19 @@ int main(int argc, char **argv) {
 		err(2, "malloc errors");
 	}
 
-	// create reference file or verify files in reference file
-	if (mflag == 'c') {
-		create_reference_file();
+	//file verification is on by default...
+	if (rflag == 1) {
+		r = create_reference_file();
 	} else {
 		r = do_file_verification();
 	}
 
+	if ((r != 0)){
+		printf("Completed with errors.");
+	}else{
+		printf("Pass");
+	}
 	// give the return value back to caller
 	return r;
 }
+
