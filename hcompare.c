@@ -8,9 +8,9 @@
  *
  *
  * TODO Properly argument inputs.
+ * TODO Length check before MD5 check.
  * TODO check return values and add better comments, function headers, etc...
  * TODO does this give a useful return value (non-zero) on errors?
- * TODO Test directory input value to ensure it is a directory?
  * TODO if delimiters in ref file are not tabs it stack dumps
  * TODO full level of tests
  * TODO sequence err return numbers
@@ -126,17 +126,21 @@ void to_bytes(uint32_t val, uint8_t *bytes) {
 	bytes[3] = (uint8_t) (val >> 24);
 }
 
-/* @brief Check if file exists.
+/* @brief Check if file exists + get file size if file exists.
  *
  * @param filename to check
  * @return returns
  */
 int file_exists(const char *filename){
 	debug("Inside [file_exists]\n");
+	struct stat fle;
 
-	FILE *fp = fopen(filename,"r");
-	if (fp != NULL) fclose(fp);
-	return (fp!=NULL);
+	if (stat(filename, &fle) == 0) {
+		debug("File Exists, Returning file size.");
+		return fle.st_size;
+	}
+	debug("File Doesnt Exist");
+	return NULL;
 }
 
 /* @brief Retrieve integer bytes in same order no matter the system byte ordering
@@ -534,17 +538,17 @@ int do_file_verification() {
 	debug("Inside [do_file_verification]\n");
 
 	int rval = 0;					// return value
-	char buf[LINE_LENGTH_MAX];		// reference file line read buffer
-	char fn_buf[FILENAME_MAX];		// file name buffer
-	char md5_buf[MD5_MAX];			// md5 result buffer
-	char len_buf[LENGTH_MAX];		// length field read buffer
-	int flen = 0;					// current file length
-	char * p_c;						// var tfor temp storage
+	char buf[LINE_LENGTH_MAX + 1];		// reference file line read buffer
+	char fn_buf[FILENAME_MAX + 1];		// file name buffer
+	char md5_buf[MD5_MAX + 1];			// md5 result buffer
+	char len_buf[LENGTH_MAX + 1];		// length field read buffer
+	int flen = 0;					// current file length read from file.
+	int flen_tar = 0;				// file length of
+	char * p_c;						// var for temp storage
 	uint8_t* p = NULL;
 	void* p_buf = NULL;
 	int r = 0;
 	int i = 0;
-	char test[32];
 	uint8_t result[16];
 
 	//Open reference file
@@ -576,13 +580,35 @@ int do_file_verification() {
 		p_c = strtok(NULL, "\n");
 		strcpy(fn_buf, p_c);
 
+		flen_tar = file_exists(fn_buf);
+
 		//Check if file exists on target before running MD5
-		if (NULL == (file_exists(fn_buf))){
-			printf("WARN: File does not exist: %s\n", fn_buf);
-			continue;
+		if (NULL == flen_tar){
+			if (kflag != 1){
+				printf("ERROR: File does not exist: %s\n", fn_buf);
+				err(4, "Error File Missing");
+			}else{
+				printf("WARN: File does not exist: %s\n", fn_buf);
+				continue;
+			}
 		}else{
-			//Run MD5 passing in Filename and File Length.
-			md5_file(fn_buf, flen, result);
+			//Compare file lens, if mismatch, throw error and go to next file or exit depening on mode.
+			if (flen_tar == flen){
+				debug("Files Match! running MD5");
+
+				//Run MD5 passing in Filename and File Length.
+				md5_file(fn_buf, flen_tar, result);
+			}else{
+				debug("File Mismatch");
+
+				if (kflag != 1){
+					printf("ERROR: File Length Mismatch. %s\n", fn_buf);
+					err(5, "Error File Length Mismatch ");
+				}else{
+					printf("WARN: File Length Mismatch. %s\n", fn_buf);
+					continue;
+				}
+			}
 		}
 
 		p = &result[0];
@@ -591,17 +617,13 @@ int do_file_verification() {
 			p_buf += sprintf((char *) p_buf, "%02x", *p++);
 		}
 
-		strncpy(test,md5_buf,32);
-		test[32] = 0;
-		debug(test);
-
-		//Compare strings together... MAX 16 char
-		r = strncmp(md5_buf, buf, 16);
+		//Compare strings together... MAX 32 char, 16 bytes
+		r = strncmp(md5_buf, buf, 32);
 
 		if (r != 0) {
 			//kflag 1 = Analysis Mode
 			if (kflag == 1){
-				printf("WARN: Mismatch file: %s  Expected Value: %s Actual Value: %s\n", fn_buf, buf, md5_buf);
+				printf("WARN: Mismatch file: %s  Expected Value: %s Actual Value: %s\n", fn_buf, md5_buf, buf);
 				rval = 1;
 			}else{
 				printf("ERROR: %s\n", fn_buf);
@@ -640,9 +662,9 @@ int main(int argc, char **argv){
 	}
 
 	if ((r != 0)){
-		printf("Completed with errors.");
+		printf("Completed with errors.\n");
 	}else{
-		printf("Pass");
+		printf("Finished!.\n");
 	}
 	// give the return value back to caller
 	return r;
